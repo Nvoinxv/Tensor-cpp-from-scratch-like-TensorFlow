@@ -50,8 +50,6 @@ int Tensor::flattenIndex(const std::vector<int>& indices) const {
 Tensor::Tensor(const std::vector<int>& shape) 
     : shape(shape), total_size(computeTotalSize(shape)) {
     computeStrides();
-    
-    // Reserve memory untuk menghindari realokasi
     data.reserve(total_size);
     data.resize(total_size, 0.0);
 }
@@ -64,8 +62,6 @@ Tensor::Tensor(const std::vector<int>& shape, const std::vector<double>& values)
     }
     
     computeStrides();
-    
-    // Efficient copy dengan reserve //
     data.reserve(total_size);
     data = values;
 }
@@ -137,8 +133,6 @@ void Tensor::printRecursive(const std::vector<int>& indices, int dim) const {
         for (int i = 0; i < shape[dim]; i++) {
             auto idx = indices;
             idx.push_back(i);
-            
-            // Use optimized flattenIndex
             std::cout << data[flattenIndex(idx)];
             if (i < shape[dim] - 1) std::cout << ", ";
         }
@@ -148,7 +142,6 @@ void Tensor::printRecursive(const std::vector<int>& indices, int dim) const {
         for (int i = 0; i < shape[dim]; i++) {
             if (i > 0) {
                 std::cout << ",\n";
-                // Indentation untuk readability
                 for (int j = 0; j <= dim; j++) std::cout << " ";
             }
             auto idx = indices;
@@ -224,7 +217,7 @@ Tensor Tensor::slice(const std::vector<std::pair<int, int>>& ranges) const {
     
     Tensor result(new_shape);
     
-    // Recursive slicing (simplified implementation)
+    // Recursive slicing (simplified implementation) //
     std::function<void(std::vector<int>&, std::vector<int>&, int)> slice_recursive;
     slice_recursive = [&](std::vector<int>& src_idx, std::vector<int>& dst_idx, int dim) {
         if (dim == static_cast<int>(shape.size())) {
