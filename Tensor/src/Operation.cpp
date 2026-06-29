@@ -3,325 +3,812 @@
 #include <algorithm>
 #include <iostream>
 #include <functional>
+#include <numeric>
 
-// Helper function for accses tensor data with flat index //
-double getTensorValue(const Tensor& t, int flatIndex) {
-    auto shape = t.getShape();
-    std::vector<int> indices(shape.size());
-    
-    int remaining = flatIndex;
-    for (int i = shape.size() - 1; i >= 0; --i) {
-        indices[i] = remaining % shape[i];
-        remaining /= shape[i];
-    }
-    
-    return t.at(indices);
+// ==========================================
+// Helper functions for autodiff closures
+// ==========================================
+
+static void attach_binary_backward(Tensor& out, const Tensor& a, const Tensor& b, std::function<void()> bwd) {
+    if (!out.requiresGrad()) return;
+    out.getImpl()->parents.push_back(a);
+    out.getImpl()->parents.push_back(b);
+    out.getImpl()->backward_fn = bwd;
 }
 
-// I make a logic function for all operation and activation neuron deep learning //
-// Because this is a test for Tensor //
-// I use Tensor calculate not a vector libary c++ //
+static void attach_unary_backward(Tensor& out, const Tensor& a, std::function<void()> bwd) {
+    if (!out.requiresGrad()) return;
+    out.getImpl()->parents.push_back(a);
+    out.getImpl()->backward_fn = bwd;
+}
 
-// Addition tensor //
+// ==========================================
+// Basic Algebra Operations
+// ==========================================
+
 Tensor Operation::add(const Tensor& a, const Tensor& b) {
-    if (a.getShape() != b.getShape()) {
-        throw std::invalid_argument("Shape is not same!");
-    }
+    bool req_grad = a.requiresGrad() || b.requiresGrad();
     
-    auto shape = a.getShape();
-    Tensor result(shape);
-    
-    // Iterasi melalui semua elemen dengan flat index //
-    for (int i = 0; i < a.size(); ++i) {
-        // Convert flat index ke multi-dimensional indices //
-        std::vector<int> indices(shape.size());
-        int remaining = i;
-        for (int j = shape.size() - 1; j >= 0; --j) {
-            indices[j] = remaining % shape[j];
-            remaining /= shape[j];
+    if (a.isScalar() && !b.isScalar()) {
+        Tensor out(b.getShape(), req_grad);
+        double val_a = a.at({0});
+        const auto& data_b = b.getData();
+        auto& data_out = out.getMutableData();
+        for (size_t i = 0; i < data_b.size(); ++i) {
+            data_out[i] = val_a + data_b[i];
         }
-        
-        double val_a = a.at(indices);
-        double val_b = b.at(indices);
-        result.set(indices, val_a + val_b);
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            const auto& og = out_impl->grad;
+            if (a.requiresGrad()) {
+                double sum_g = 0.0;
+                for (double g : og) sum_g += g;
+                a.getMutableGrad()[0] += sum_g;
+            }
+            if (b.requiresGrad()) {
+                auto& bg = b.getMutableGrad();
+                for (size_t i = 0; i < og.size(); ++i) bg[i] += og[i];
+            }
+        });
+        return out;
     }
     
-    return result;
+    if (!a.isScalar() && b.isScalar()) {
+        Tensor out(a.getShape(), req_grad);
+        const auto& data_a = a.getData();
+        double val_b = b.at({0});
+        auto& data_out = out.getMutableData();
+        for (size_t i = 0; i < data_a.size(); ++i) {
+            data_out[i] = data_a[i] + val_b;
+        }
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            const auto& og = out_impl->grad;
+            if (a.requiresGrad()) {
+                auto& ag = a.getMutableGrad();
+                for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i];
+            }
+            if (b.requiresGrad()) {
+                double sum_g = 0.0;
+                for (double g : og) sum_g += g;
+                b.getMutableGrad()[0] += sum_g;
+            }
+        });
+        return out;
+    }
+
+    if (a.getShape() != b.getShape()) {
+        throw std::invalid_argument("Shape mismatch in Operation::add!");
+    }
+
+    Tensor out(a.getShape(), req_grad);
+    const auto& da = a.getData();
+    const auto& db = b.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) {
+        dout[i] = da[i] + db[i];
+    }
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i];
+        }
+        if (b.requiresGrad()) {
+            auto& bg = b.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) bg[i] += og[i];
+        }
+    });
+
+    return out;
 }
 
-// Subtraction tensor //
 Tensor Operation::sub(const Tensor& a, const Tensor& b) {
-    if (a.getShape() != b.getShape()) {
-        throw std::invalid_argument("Shape it's not sweetable for operetion sub!");
-    }
+    bool req_grad = a.requiresGrad() || b.requiresGrad();
     
-    auto shape = a.getShape();
-    Tensor result(shape);
-    
-    for (int i = 0; i < a.size(); ++i) {
-        std::vector<int> indices(shape.size());
-        int remaining = i;
-        for (int j = shape.size() - 1; j >= 0; --j) {
-            indices[j] = remaining % shape[j];
-            remaining /= shape[j];
+    if (a.isScalar() && !b.isScalar()) {
+        Tensor out(b.getShape(), req_grad);
+        double val_a = a.at({0});
+        const auto& data_b = b.getData();
+        auto& data_out = out.getMutableData();
+        for (size_t i = 0; i < data_b.size(); ++i) {
+            data_out[i] = val_a - data_b[i];
         }
-        
-        double val_a = a.at(indices);
-        double val_b = b.at(indices);
-        result.set(indices, val_a - val_b);
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            const auto& og = out_impl->grad;
+            if (a.requiresGrad()) {
+                double sum_g = 0.0;
+                for (double g : og) sum_g += g;
+                a.getMutableGrad()[0] += sum_g;
+            }
+            if (b.requiresGrad()) {
+                auto& bg = b.getMutableGrad();
+                for (size_t i = 0; i < og.size(); ++i) bg[i] -= og[i];
+            }
+        });
+        return out;
     }
     
-    return result;
+    if (!a.isScalar() && b.isScalar()) {
+        Tensor out(a.getShape(), req_grad);
+        const auto& data_a = a.getData();
+        double val_b = b.at({0});
+        auto& data_out = out.getMutableData();
+        for (size_t i = 0; i < data_a.size(); ++i) {
+            data_out[i] = data_a[i] - val_b;
+        }
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            const auto& og = out_impl->grad;
+            if (a.requiresGrad()) {
+                auto& ag = a.getMutableGrad();
+                for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i];
+            }
+            if (b.requiresGrad()) {
+                double sum_g = 0.0;
+                for (double g : og) sum_g += g;
+                b.getMutableGrad()[0] -= sum_g;
+            }
+        });
+        return out;
+    }
+
+    if (a.getShape() != b.getShape()) {
+        throw std::invalid_argument("Shape mismatch in Operation::sub!");
+    }
+
+    Tensor out(a.getShape(), req_grad);
+    const auto& da = a.getData();
+    const auto& db = b.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) {
+        dout[i] = da[i] - db[i];
+    }
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i];
+        }
+        if (b.requiresGrad()) {
+            auto& bg = b.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) bg[i] -= og[i];
+        }
+    });
+
+    return out;
 }
 
-// Multiple element-wise //
 Tensor Operation::mul(const Tensor& a, const Tensor& b) {
-    if (a.getShape() != b.getShape()) {
-        throw std::invalid_argument("Shape it's not sweetable for operetion mul!");
-    }
+    bool req_grad = a.requiresGrad() || b.requiresGrad();
     
-    auto shape = a.getShape();
-    Tensor result(shape);
-    
-    for (int i = 0; i < a.size(); ++i) {
-        std::vector<int> indices(shape.size());
-        int remaining = i;
-        for (int j = shape.size() - 1; j >= 0; --j) {
-            indices[j] = remaining % shape[j];
-            remaining /= shape[j];
-        }
+    if (a.isScalar() && !b.isScalar()) {
+        Tensor out(b.getShape(), req_grad);
+        double val_a = a.at({0});
+        const auto& db = b.getData();
+        auto& dout = out.getMutableData();
+        for (size_t i = 0; i < db.size(); ++i) dout[i] = val_a * db[i];
         
-        double val_a = a.at(indices);
-        double val_b = b.at(indices);
-        result.set(indices, val_a * val_b);
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            const auto& og = out_impl->grad;
+            const auto& db = b.getData();
+            if (a.requiresGrad()) {
+                double sum_g = 0.0;
+                for (size_t i = 0; i < og.size(); ++i) sum_g += og[i] * db[i];
+                a.getMutableGrad()[0] += sum_g;
+            }
+            if (b.requiresGrad()) {
+                double val_a = a.getData()[0];
+                auto& bg = b.getMutableGrad();
+                for (size_t i = 0; i < og.size(); ++i) bg[i] += og[i] * val_a;
+            }
+        });
+        return out;
     }
     
-    return result;
+    if (!a.isScalar() && b.isScalar()) {
+        return Operation::mul(b, a);
+    }
+
+    if (a.getShape() != b.getShape()) {
+        throw std::invalid_argument("Shape mismatch in Operation::mul!");
+    }
+
+    Tensor out(a.getShape(), req_grad);
+    const auto& da = a.getData();
+    const auto& db = b.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) dout[i] = da[i] * db[i];
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& da = a.getData();
+        const auto& db = b.getData();
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i] * db[i];
+        }
+        if (b.requiresGrad()) {
+            auto& bg = b.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) bg[i] += og[i] * da[i];
+        }
+    });
+
+    return out;
 }
 
-// Dot product //
+Tensor Operation::div(const Tensor& a, const Tensor& b) {
+    bool req_grad = a.requiresGrad() || b.requiresGrad();
+    
+    if (!a.isScalar() && b.isScalar()) {
+        Tensor out(a.getShape(), req_grad);
+        const auto& da = a.getData();
+        double val_b = b.at({0});
+        auto& dout = out.getMutableData();
+        for (size_t i = 0; i < da.size(); ++i) dout[i] = da[i] / val_b;
+
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            const auto& og = out_impl->grad;
+            const auto& da = a.getData();
+            double val_b = b.getData()[0];
+            if (a.requiresGrad()) {
+                auto& ag = a.getMutableGrad();
+                for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i] / val_b;
+            }
+            if (b.requiresGrad()) {
+                double sum_g = 0.0;
+                for (size_t i = 0; i < og.size(); ++i) sum_g += og[i] * (-da[i] / (val_b * val_b));
+                b.getMutableGrad()[0] += sum_g;
+            }
+        });
+        return out;
+    }
+
+    if (a.getShape() != b.getShape()) {
+        throw std::invalid_argument("Shape mismatch in Operation::div!");
+    }
+
+    Tensor out(a.getShape(), req_grad);
+    const auto& da = a.getData();
+    const auto& db = b.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) dout[i] = da[i] / db[i];
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& da = a.getData();
+        const auto& db = b.getData();
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i] / db[i];
+        }
+        if (b.requiresGrad()) {
+            auto& bg = b.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) bg[i] += og[i] * (-da[i] / (db[i] * db[i]));
+        }
+    });
+
+    return out;
+}
+
+Tensor Operation::neg(const Tensor& a) {
+    Tensor out(a.getShape(), a.requiresGrad());
+    const auto& da = a.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) dout[i] = -da[i];
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, a, [out_weak, a]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] -= og[i];
+        }
+    });
+    return out;
+}
+
+Tensor Operation::pow(const Tensor& a, double exponent) {
+    Tensor out(a.getShape(), a.requiresGrad());
+    const auto& da = a.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) dout[i] = std::pow(da[i], exponent);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, a, [out_weak, a, exponent]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& da = a.getData();
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) {
+                ag[i] += og[i] * exponent * std::pow(da[i], exponent - 1.0);
+            }
+        }
+    });
+    return out;
+}
+
+Tensor Operation::exp(const Tensor& a) {
+    Tensor out(a.getShape(), a.requiresGrad());
+    const auto& da = a.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) dout[i] = std::exp(da[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, a, [out_weak, a]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dout = out_impl->data;
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i] * dout[i];
+        }
+    });
+    return out;
+}
+
+Tensor Operation::log(const Tensor& a) {
+    Tensor out(a.getShape(), a.requiresGrad());
+    const auto& da = a.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < da.size(); ++i) dout[i] = std::log(da[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, a, [out_weak, a]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& da = a.getData();
+        if (a.requiresGrad()) {
+            auto& ag = a.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) ag[i] += og[i] / da[i];
+        }
+    });
+    return out;
+}
+
+// ==========================================
+// Trigonometric & Hyperbolic Operations
+// ==========================================
+
+Tensor Operation::sin(const Tensor& t) {
+    Tensor out(t.getShape(), t.requiresGrad());
+    const auto& dt = t.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < dt.size(); ++i) dout[i] = std::sin(dt[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dt = t.getData();
+        if (t.requiresGrad()) {
+            auto& tg = t.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) tg[i] += og[i] * std::cos(dt[i]);
+        }
+    });
+    return out;
+}
+
+Tensor Operation::cos(const Tensor& t) {
+    Tensor out(t.getShape(), t.requiresGrad());
+    const auto& dt = t.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < dt.size(); ++i) dout[i] = std::cos(dt[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dt = t.getData();
+        if (t.requiresGrad()) {
+            auto& tg = t.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) tg[i] += og[i] * (-std::sin(dt[i]));
+        }
+    });
+    return out;
+}
+
+Tensor Operation::tan(const Tensor& t) {
+    Tensor out(t.getShape(), t.requiresGrad());
+    const auto& dt = t.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < dt.size(); ++i) dout[i] = std::tan(dt[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dout = out_impl->data;
+        if (t.requiresGrad()) {
+            auto& tg = t.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) tg[i] += og[i] * (1.0 + dout[i] * dout[i]);
+        }
+    });
+    return out;
+}
+
+Tensor Operation::tanh(const Tensor& t) {
+    Tensor out(t.getShape(), t.requiresGrad());
+    const auto& dt = t.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < dt.size(); ++i) dout[i] = std::tanh(dt[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dout = out_impl->data;
+        if (t.requiresGrad()) {
+            auto& tg = t.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) tg[i] += og[i] * (1.0 - dout[i] * dout[i]);
+        }
+    });
+    return out;
+}
+
+// ==========================================
+// Activation Functions
+// ==========================================
+
+Tensor Operation::relu(const Tensor& t) {
+    Tensor out(t.getShape(), t.requiresGrad());
+    const auto& dt = t.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < dt.size(); ++i) dout[i] = std::max(0.0, dt[i]);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dt = t.getData();
+        if (t.requiresGrad()) {
+            auto& tg = t.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) {
+                if (dt[i] > 0.0) tg[i] += og[i];
+            }
+        }
+    });
+    return out;
+}
+
+Tensor Operation::sigmoid(const Tensor& t) {
+    Tensor out(t.getShape(), t.requiresGrad());
+    const auto& dt = t.getData();
+    auto& dout = out.getMutableData();
+    for (size_t i = 0; i < dt.size(); ++i) dout[i] = 1.0 / (1.0 + std::exp(-dt[i]));
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        const auto& og = out_impl->grad;
+        const auto& dout = out_impl->data;
+        if (t.requiresGrad()) {
+            auto& tg = t.getMutableGrad();
+            for (size_t i = 0; i < og.size(); ++i) tg[i] += og[i] * dout[i] * (1.0 - dout[i]);
+        }
+    });
+    return out;
+}
+
+Tensor Operation::softmax(const Tensor& t) {
+    auto shape = t.getShape();
+    if (shape.empty()) throw std::invalid_argument("Softmax cannot apply to empty Tensor");
+
+    Tensor out(shape, t.requiresGrad());
+    
+    if (shape.size() == 1) {
+        double max_val = t.at({0});
+        for (int i = 1; i < shape[0]; ++i) max_val = std::max(max_val, t.at({i}));
+        
+        std::vector<double> exp_vals(shape[0]);
+        double sum_exp = 0.0;
+        for (int i = 0; i < shape[0]; ++i) {
+            exp_vals[i] = std::exp(t.at({i}) - max_val);
+            sum_exp += exp_vals[i];
+        }
+        for (int i = 0; i < shape[0]; ++i) {
+            out.set({i}, exp_vals[i] / sum_exp);
+        }
+    } else {
+        int last_dim = shape.back();
+        int outer_size = t.size() / last_dim;
+        for (int outer = 0; outer < outer_size; ++outer) {
+            std::vector<int> idx(shape.size(), 0);
+            int rem = outer;
+            for (int j = static_cast<int>(shape.size()) - 2; j >= 0; --j) {
+                idx[j] = rem % shape[j];
+                rem /= shape[j];
+            }
+            double max_val = t.at(idx);
+            for (int i = 1; i < last_dim; ++i) {
+                idx.back() = i;
+                max_val = std::max(max_val, t.at(idx));
+            }
+            std::vector<double> exp_vals(last_dim);
+            double sum_exp = 0.0;
+            for (int i = 0; i < last_dim; ++i) {
+                idx.back() = i;
+                exp_vals[i] = std::exp(t.at(idx) - max_val);
+                sum_exp += exp_vals[i];
+            }
+            for (int i = 0; i < last_dim; ++i) {
+                idx.back() = i;
+                out.set(idx, exp_vals[i] / sum_exp);
+            }
+        }
+    }
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t, shape]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        if (!t.requiresGrad()) return;
+        const auto& og = out_impl->grad;
+        const auto& dout = out_impl->data;
+        auto& tg = t.getMutableGrad();
+
+        if (shape.size() == 1) {
+            int n = shape[0];
+            for (int i = 0; i < n; ++i) {
+                double sum = 0.0;
+                for (int j = 0; j < n; ++j) {
+                    double kronecker = (i == j) ? 1.0 : 0.0;
+                    sum += og[j] * dout[j] * (kronecker - dout[i]);
+                }
+                tg[i] += sum;
+            }
+        } else {
+            int last_dim = shape.back();
+            int outer_size = t.size() / last_dim;
+            for (int outer = 0; outer < outer_size; ++outer) {
+                int offset = outer * last_dim;
+                for (int i = 0; i < last_dim; ++i) {
+                    double sum = 0.0;
+                    for (int j = 0; j < last_dim; ++j) {
+                        double kronecker = (i == j) ? 1.0 : 0.0;
+                        sum += og[offset + j] * dout[offset + j] * (kronecker - dout[offset + i]);
+                    }
+                    tg[offset + i] += sum;
+                }
+            }
+        }
+    });
+
+    return out;
+}
+
+// ==========================================
+// Linear Algebra & Reductions
+// ==========================================
+
 Tensor Operation::dot(const Tensor& a, const Tensor& b) {
+    return Operation::matmul(a, b);
+}
+
+Tensor Operation::matmul(const Tensor& a, const Tensor& b) {
     auto shapeA = a.getShape();
     auto shapeB = b.getShape();
 
-    // Case 1: Vector dot (1D) //
     if (shapeA.size() == 1 && shapeB.size() == 1) {
-        if (a.size() != b.size()) {
-            throw std::invalid_argument("Dimensional not sweetable untuk dot 1D!");
-        }
+        if (a.size() != b.size()) throw std::invalid_argument("Vector dot mismatch!");
+        bool req_grad = a.requiresGrad() || b.requiresGrad();
         double sum = 0.0;
-        for (int i = 0; i < a.size(); ++i) {
-            double val_a = a.at({i});
-            double val_b = b.at({i});
-            sum += val_a * val_b;
-        }
-        return Tensor({1}, {sum});
+        for (int i = 0; i < a.size(); ++i) sum += a.at({i}) * b.at({i});
+        Tensor out({1}, {sum}, req_grad);
+
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            double og = out_impl->grad[0];
+            if (a.requiresGrad()) {
+                auto& ag = a.getMutableGrad();
+                const auto& db = b.getData();
+                for (size_t i = 0; i < ag.size(); ++i) ag[i] += og * db[i];
+            }
+            if (b.requiresGrad()) {
+                auto& bg = b.getMutableGrad();
+                const auto& da = a.getData();
+                for (size_t i = 0; i < bg.size(); ++i) bg[i] += og * da[i];
+            }
+        });
+        return out;
     }
 
-    // Case 2: Matrix multiplication (2D) //
     if (shapeA.size() == 2 && shapeB.size() == 2) {
-        if (shapeA[1] != shapeB[0]) {
-            throw std::invalid_argument("Dimensional not sweetable for matrix dot!");
-        }
-        
+        if (shapeA[1] != shapeB[0]) throw std::invalid_argument("2D Matmul dimension mismatch!");
         int m = shapeA[0], n = shapeA[1], p = shapeB[1];
-        Tensor result({m, p});
+        bool req_grad = a.requiresGrad() || b.requiresGrad();
+        Tensor out({m, p}, req_grad);
 
         for (int i = 0; i < m; ++i) {
             for (int j = 0; j < p; ++j) {
                 double sum = 0.0;
                 for (int k = 0; k < n; ++k) {
-                    double val_a = a.at({i, k});
-                    double val_b = b.at({k, j});
-                    sum += val_a * val_b;
+                    sum += a.at({i, k}) * b.at({k, j});
                 }
-                result.set({i, j}, sum);
-            }
-        }
-        return result;
-    }
-
-    // Case 3: Batched matmul (>2D) //
-    if (shapeA.size() > 2 && shapeB.size() > 2) {
-        if (shapeA.size() != shapeB.size()) {
-            throw std::invalid_argument("Batched matmul need same rank tensor!");
-        }
-        
-        // Validasi batch dimensions
-        for (int i = 0; i < shapeA.size() - 2; ++i) {
-            if (shapeA[i] != shapeB[i]) {
-                throw std::invalid_argument("Batch dimensional it's not sweetable!");
+                out.set({i, j}, sum);
             }
         }
 
-        int m = shapeA[shapeA.size()-2];
-        int kA = shapeA[shapeA.size()-1];
-        int kB = shapeB[shapeB.size()-2];
-        int n = shapeB[shapeB.size()-1];
-
-        if (kA != kB) {
-            throw std::invalid_argument("Inner dimensional it's not sweetable!");
-        }
-
-        std::vector<int> outShape = shapeA;
-        outShape[outShape.size()-2] = m;
-        outShape[outShape.size()-1] = n;
-
-        Tensor result(outShape);
-
-        // Generate all combiancation batch and indicies //
-        std::function<void(std::vector<int>&, int)> processBatch;
-        processBatch = [&](std::vector<int>& batchIdx, int dim) {
-            if (dim == shapeA.size() - 2) {
-                // Process matrix multiplication for this batch //
+        auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+        attach_binary_backward(out, a, b, [out_weak, a, b, m, n, p]() mutable {
+            auto out_impl = out_weak.lock(); if (!out_impl) return;
+            // dA = dC * B^T
+            if (a.requiresGrad()) {
                 for (int i = 0; i < m; ++i) {
-                    for (int j = 0; j < n; ++j) {
+                    for (int k = 0; k < n; ++k) {
                         double sum = 0.0;
-                        for (int k = 0; k < kA; ++k) {
-                            std::vector<int> idxA = batchIdx;
-                            idxA.push_back(i);
-                            idxA.push_back(k);
-                            
-                            std::vector<int> idxB = batchIdx;
-                            idxB.push_back(k);
-                            idxB.push_back(j);
-                            
-                            sum += a.at(idxA) * b.at(idxB);
+                        for (int j = 0; j < p; ++j) {
+                            sum += out_impl->grad[i * p + j] * b.at({k, j});
                         }
-                        
-                        std::vector<int> idxOut = batchIdx;
-                        idxOut.push_back(i);
-                        idxOut.push_back(j);
-                        result.set(idxOut, sum);
+                        a.gradAt({i, k}) += sum;
                     }
                 }
-            } else {
-                for (int i = 0; i < shapeA[dim]; ++i) {
-                    batchIdx[dim] = i;
-                    processBatch(batchIdx, dim + 1);
+            }
+            // dB = A^T * dC
+            if (b.requiresGrad()) {
+                for (int k = 0; k < n; ++k) {
+                    for (int j = 0; j < p; ++j) {
+                        double sum = 0.0;
+                        for (int i = 0; i < m; ++i) {
+                            sum += a.at({i, k}) * out_impl->grad[i * p + j];
+                        }
+                        b.gradAt({k, j}) += sum;
+                    }
                 }
             }
-        };
-
-        std::vector<int> batchIdx(shapeA.size() - 2);
-        processBatch(batchIdx, 0);
-        
-        return result;
+        });
+        return out;
     }
 
-    throw std::invalid_argument("Dot only support 1D, 2D, or batched >2D!");
+    throw std::invalid_argument("Matmul currently supports 1D vectors and 2D matrices!");
 }
 
-// Activation Neuron ReLU //
-Tensor Operation::relu(const Tensor& t) {
+Tensor Operation::transpose(const Tensor& t) {
     auto shape = t.getShape();
-    Tensor result(shape);
-    
-    for (int i = 0; i < t.size(); ++i) {
-        std::vector<int> indices(shape.size());
-        int remaining = i;
-        for (int j = shape.size() - 1; j >= 0; --j) {
-            indices[j] = remaining % shape[j];
-            remaining /= shape[j];
+    if (shape.size() != 2) throw std::invalid_argument("Transpose currently supports 2D matrices!");
+    int rows = shape[0], cols = shape[1];
+    Tensor out({cols, rows}, t.requiresGrad());
+
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            out.set({j, i}, t.at({i, j}));
         }
-        
-        double val = t.at(indices);
-        result.set(indices, std::max(0.0, val));
     }
-    
-    return result;
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t, rows, cols]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        if (!t.requiresGrad()) return;
+        for (int i = 0; i < rows; ++i) {
+            for (int j = 0; j < cols; ++j) {
+                t.gradAt({i, j}) += out_impl->grad[j * rows + i];
+            }
+        }
+    });
+    return out;
 }
 
-// Activation neuron Sigmoid //
-Tensor Operation::sigmoid(const Tensor& t) {
+Tensor Operation::inverse(const Tensor& t) {
     auto shape = t.getShape();
-    Tensor result(shape);
-    
-    for (int i = 0; i < t.size(); ++i) {
-        std::vector<int> indices(shape.size());
-        int remaining = i;
-        for (int j = shape.size() - 1; j >= 0; --j) {
-            indices[j] = remaining % shape[j];
-            remaining /= shape[j];
-        }
-        
-        double val = t.at(indices);
-        result.set(indices, 1.0 / (1.0 + std::exp(-val)));
+    if (shape.size() != 2 || shape[0] != shape[1]) {
+        throw std::invalid_argument("Inverse requires a square 2D matrix!");
     }
-    
-    return result;
+    int n = shape[0];
+    Tensor out({n, n}, t.requiresGrad());
+
+    // Augmented matrix [A | I]
+    std::vector<std::vector<double>> aug(n, std::vector<double>(2 * n, 0.0));
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) aug[i][j] = t.at({i, j});
+        aug[i][n + i] = 1.0;
+    }
+
+    // Gauss-Jordan elimination
+    for (int i = 0; i < n; ++i) {
+        double max_el = std::abs(aug[i][i]);
+        int pivot = i;
+        for (int k = i + 1; k < n; ++k) {
+            if (std::abs(aug[k][i]) > max_el) {
+                max_el = std::abs(aug[k][i]);
+                pivot = k;
+            }
+        }
+        if (max_el < 1e-12) throw std::runtime_error("Matrix is singular or nearly singular!");
+        if (pivot != i) std::swap(aug[i], aug[pivot]);
+
+        double div_val = aug[i][i];
+        for (int j = 0; j < 2 * n; ++j) aug[i][j] /= div_val;
+
+        for (int k = 0; k < n; ++k) {
+            if (k != i) {
+                double factor = aug[k][i];
+                for (int j = 0; j < 2 * n; ++j) aug[k][j] -= factor * aug[i][j];
+            }
+        }
+    }
+
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            out.set({i, j}, aug[i][n + j]);
+        }
+    }
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t, out, n]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        if (!t.requiresGrad()) return;
+        // dX = - Y^T * dY * Y^T where Y = out
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                double temp = 0.0;
+                for (int k = 0; k < n; ++k) {
+                    for (int l = 0; l < n; ++l) {
+                        // -Y^T(i, k) * dY(k, l) * Y^T(l, j) = -Y(k, i) * dY(k, l) * Y(j, l)
+                        temp += -out.at({k, i}) * out_impl->grad[k * n + l] * out.at({j, l});
+                    }
+                }
+                t.gradAt({i, j}) += temp;
+            }
+        }
+    });
+
+    return out;
 }
 
-// Activation neuron Softmax //
-Tensor Operation::softmax(const Tensor& t) {
-    auto shape = t.getShape();
-    
-    // For tensor multidimensional, try softmax in end dimensional //
-    if (shape.empty()) {
-        throw std::invalid_argument("Softmax can't try in the 0 Tensor");
-    }
-    
-    Tensor result(shape);
-    
-    if (shape.size() == 1) {
-        // Simple 1D case //
-        double max_val = t.at({0});
-        for (int i = 1; i < shape[0]; ++i) {
-            max_val = std::max(max_val, t.at({i}));
-        }
-        
-        std::vector<double> exp_vals(shape[0]);
-        double sum_exp = 0.0;
-        
-        for (int i = 0; i < shape[0]; ++i) {
-            exp_vals[i] = std::exp(t.at({i}) - max_val);
-            sum_exp += exp_vals[i];
-        }
-        
-        for (int i = 0; i < shape[0]; ++i) {
-            result.set({i}, exp_vals[i] / sum_exp);
-        }
-    } else {
-        // Multidimensional case - softmax //
-        int last_dim = shape[shape.size() - 1];
-        int outer_size = t.size() / last_dim;
-        
-        for (int outer = 0; outer < outer_size; ++outer) {
-            // Convert outer index ke multi-dimensional indices //
-            std::vector<int> base_indices(shape.size() - 1);
-            int remaining = outer;
-            for (int j = shape.size() - 2; j >= 0; --j) {
-                base_indices[j] = remaining % shape[j];
-                remaining /= shape[j];
-            }
-            
-            // Find max for stability numerical //
-            std::vector<int> idx = base_indices;
-            idx.push_back(0);
-            double max_val = t.at(idx);
-            
-            for (int i = 1; i < last_dim; ++i) {
-                idx[idx.size() - 1] = i;
-                max_val = std::max(max_val, t.at(idx));
-            }
-            
-            // Compute exp values and sum //
-            std::vector<double> exp_vals(last_dim);
-            double sum_exp = 0.0;
-            
-            for (int i = 0; i < last_dim; ++i) {
-                idx[idx.size() - 1] = i;
-                exp_vals[i] = std::exp(t.at(idx) - max_val);
-                sum_exp += exp_vals[i];
-            }
-            
-            // Set normalized values //
-            for (int i = 0; i < last_dim; ++i) {
-                idx[idx.size() - 1] = i;
-                result.set(idx, exp_vals[i] / sum_exp);
-            }
-        }
-    }
-    
-    return result;
+Tensor Operation::sum(const Tensor& t) {
+    bool req_grad = t.requiresGrad();
+    double s = 0.0;
+    const auto& dt = t.getData();
+    for (double val : dt) s += val;
+    Tensor out({1}, {s}, req_grad);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        if (!t.requiresGrad()) return;
+        double og = out_impl->grad[0];
+        auto& tg = t.getMutableGrad();
+        for (size_t i = 0; i < tg.size(); ++i) tg[i] += og;
+    });
+    return out;
+}
+
+Tensor Operation::mean(const Tensor& t) {
+    bool req_grad = t.requiresGrad();
+    double s = 0.0;
+    const auto& dt = t.getData();
+    for (double val : dt) s += val;
+    double N = static_cast<double>(dt.size());
+    Tensor out({1}, {s / (N > 0 ? N : 1.0)}, req_grad);
+
+    auto out_weak = std::weak_ptr<TensorImpl>(out.getImpl());
+    attach_unary_backward(out, t, [out_weak, t, N]() mutable {
+        auto out_impl = out_weak.lock(); if (!out_impl) return;
+        if (!t.requiresGrad()) return;
+        double og = out_impl->grad[0] / (N > 0 ? N : 1.0);
+        auto& tg = t.getMutableGrad();
+        for (size_t i = 0; i < tg.size(); ++i) tg[i] += og;
+    });
+    return out;
 }
