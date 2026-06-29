@@ -80,7 +80,6 @@ Every single mathematical operation and neural network activation function lives
 **Option A: Microsoft Visual Studio (Recommended - MSVC `cl.exe`)**
 Open **Developer Command Prompt for VS** or **x64 Native Tools Command Prompt**:
 ```cmd
-cd Tensor
 cl /EHsc /std:c++17 main.cpp src\Tensor.cpp src\ops\*.cpp /Fe:main.exe
 main.exe
 ```
@@ -88,7 +87,6 @@ main.exe
 **Option B: MinGW / GCC via PowerShell or CMD**
 Ensure MinGW (`g++`) is added to your Windows Environment `PATH`:
 ```bash
-cd Tensor
 g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main.exe
 .\main.exe
 ```
@@ -96,7 +94,6 @@ g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main.exe
 #### 🐧 2. Linux (Ubuntu / Debian / Fedora / Arch)
 Ensure `build-essential` or GCC/Clang is installed (`sudo apt install build-essential`):
 ```bash
-cd Tensor
 g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 ./main
 ```
@@ -104,7 +101,6 @@ g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 #### 🍎 3. macOS (Apple Silicon M1/M2/M3 & Intel)
 Using Apple Clang via Xcode Command Line Tools (`xcode-select --install`):
 ```bash
-cd Tensor
 clang++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 ./main
 ```
@@ -141,14 +137,12 @@ clang++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 **方式 A：使用 Microsoft Visual Studio (推荐 MSVC)**
 打开 **Developer Command Prompt for VS** 终端：
 ```cmd
-cd Tensor
 cl /EHsc /std:c++17 main.cpp src\Tensor.cpp src\ops\*.cpp /Fe:main.exe
 main.exe
 ```
 
 **方式 B：使用 MinGW / GCC (PowerShell 或 CMD)**
 ```bash
-cd Tensor
 g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main.exe
 .\main.exe
 ```
@@ -156,7 +150,6 @@ g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main.exe
 #### 🐧 2. Linux 系统 (Ubuntu / Debian / CentOS)
 确保已安装 `build-essential` 编译工具包：
 ```bash
-cd Tensor
 g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 ./main
 ```
@@ -164,7 +157,6 @@ g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 #### 🍎 3. macOS 系统 (Apple Silicon 芯片 & Intel)
 使用 Xcode 命令行工具提供的 Apple Clang (`xcode-select --install`)：
 ```bash
-cd Tensor
 clang++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 ./main
 ```
@@ -189,7 +181,6 @@ clang++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 **Opsi A: Microsoft Visual Studio (Rekomendasi - MSVC `cl.exe`)**
 Buka terminal **Developer Command Prompt for VS**:
 ```cmd
-cd Tensor
 cl /EHsc /std:c++17 main.cpp src\Tensor.cpp src\ops\*.cpp /Fe:main.exe
 main.exe
 ```
@@ -197,7 +188,6 @@ main.exe
 **Opsi B: MinGW / GCC di PowerShell atau CMD**
 Pastikan MinGW sudah ditambahkan ke `PATH` Windows:
 ```bash
-cd Tensor
 g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main.exe
 .\main.exe
 ```
@@ -205,7 +195,6 @@ g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main.exe
 #### 🐧 2. Linux (Ubuntu / Debian / Fedora / Arch)
 Pastikan compiler GCC/Clang sudah terinstall (`sudo apt install build-essential`):
 ```bash
-cd Tensor
 g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 ./main
 ```
@@ -213,7 +202,6 @@ g++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 #### 🍎 3. macOS (Apple Silicon M1/M2/M3 & Intel)
 Menggunakan compiler bawaan Apple Clang via Xcode Command Line Tools:
 ```bash
-cd Tensor
 clang++ -std=c++17 main.cpp src/Tensor.cpp src/ops/*.cpp -o main
 ./main
 ```

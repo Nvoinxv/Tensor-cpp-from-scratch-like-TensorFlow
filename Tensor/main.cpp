@@ -1,5 +1,6 @@
 #include <iostream>
 #include <iomanip>
+#include <cmath>
 #include "../Tensor/include/Tensor.hpp"
 #include "../Tensor/include/ops/all_ops.hpp"
 
